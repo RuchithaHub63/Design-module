@@ -1,49 +1,33 @@
 "use client";
-import React, { useState, useEffect } from "react";
-import {
-  DragDropContext,
-  Droppable,
-  Draggable,
-  DropResult,
-} from "@hello-pangea/dnd";
+import React, { useState, useEffect, useCallback } from "react";
+import dynamic from 'next/dynamic';
+
+// Dynamically import drag & drop components with no SSR
+const DragDropContext = dynamic(
+  () => import('@hello-pangea/dnd').then(mod => mod.DragDropContext),
+  { ssr: false }
+);
+
+const Droppable = dynamic(
+  () => import('@hello-pangea/dnd').then(mod => mod.Droppable),
+  { ssr: false }
+);
+
+const Draggable = dynamic(
+  () => import('@hello-pangea/dnd').then(mod => mod.Draggable),
+  { ssr: false }
+);
+
 import StageColumn from "./StageColumn";
 import LeadCard from "./LeadCard";
+import ProjectTypeSelector from "./ProjectTypeSelector";
 import { ALL_STAGES } from "../config/stage";
+import { leadApi, Lead } from "../api/leadApi";
 
-type Lead = { 
-  id: string; 
-  name: string; 
-  note?: string; 
-  status?: string;
-  backendId?: number;
-  // Timeline fields from backend
-  currentStageStartedAt?: string;
-  currentStageDeadlineAt?: string;
-  daysRemaining?: number;
-  hoursRemaining?: number;
-  overdue?: boolean;
-  stageType?: string;
-  projectStartDate?: string; 
-  projectEndDate?: string;   
-  rejectedStageCount?: number;
-  // NEW FIELDS
-  rejectionTimeExtensionDays?: number;
-  originalProjectDurationDays?: number;
-  extendedProjectDurationDays?: number;
-  cumulativeDaysElapsed?: number;
-  cumulativeDaysScheduled?: number;
-  projectStatus?: string;
-};
+// Import DropResult type from the library
+import type { DropResult } from '@hello-pangea/dnd';
+
 type LeadsMap = Record<string, Lead[]>;
-
-const API_BASE_URL = "http://localhost:8080/api";
-
-const convertToBackendId = (frontendId: string): string => {
-  if (frontendId.startsWith('l')) {
-    return frontendId.substring(1);
-  }
-  return frontendId;
-};
 
 const convertToFrontendId = (backendId: string | number): string => {
   const idStr = String(backendId);
@@ -53,167 +37,153 @@ const convertToFrontendId = (backendId: string | number): string => {
   return idStr;
 };
 
-// Helper function to get stage duration based on stage type - matches backend logic
-const getStageDuration = (stageType: string): {duration: string, unit: 'hours' | 'days'} => {
+// Helper function to get stage duration based on stage type and project type
+const getStageDuration = (stageType: string, projectType: string): {duration: string, unit: 'hours' | 'days'} => {
   const stage = stageType.toUpperCase();
+  const project = projectType.toUpperCase();
   
-  // Hours display stages (from your backend)
-  const HOURS_DISPLAY_STAGES = [
-    'GROUP_DESCRIPTION_UPDATE',      // 12 hours
-    'MAIL_LOOP_CHAIN_2_INITIATE',    // 12 hours
-    'D1_FILES_UPLOAD',               // 24 hours = 1 day (but show as hours)
-    'FIRST_CUT_DESIGN_QUOTATION',    // 24 hours = 1 day (but show as hours)
-    'PAYMENT_10_PERCENT',            // 24 hours = 1 day (but show as hours)
-    'DQC_1_APPROVAL',                // 24 hours = 1 day (but show as hours)
-    'DQC_2_APPROVAL',                // 24 hours = 1 day (but show as hours)
-    'D2_MASKING_REQUEST',            // 12 hours
-    'D2_FILES_UPLOAD',               // 12 hours
-    'FINAL_REVISED_FILES_READY',     // 12 hours
-    'DQC_2_SUBMISSION',              // 12 hours
-    'DESIGN_SIGN_OFF',               // 12 hours
-    'PAYMENT_40_PERCENT',            // 12 hours
-    'CX_APPROVAL_FOR_PRODUCTION',    // 8 hours
-    'POC_MAIL',                      // 8 hours
-    'TIMELINE_SUBMISSION'            // 8 hours
-  ];
-  
-  // Days display stages (from your backend)
-  const DAYS_DISPLAY_STAGES = [
-    'D1_REQUEST_MAIL_TO_TEAM',       // 2 days = 48 hours
-    'MATERIAL_SELECTION_MEETING',    // 2 days = 48 hours
-    'DQC_1_SUBMISSION'               // 2 days = 48 hours
-  ];
-  
-  // Check for hours display stages first
-  if (HOURS_DISPLAY_STAGES.includes(stage)) {
-    if (stage === 'GROUP_DESCRIPTION_UPDATE' || stage === 'MAIL_LOOP_CHAIN_2_INITIATE' ||
-        stage === 'D2_MASKING_REQUEST' || stage === 'D2_FILES_UPLOAD' ||
-        stage === 'FINAL_REVISED_FILES_READY' || stage === 'DQC_2_SUBMISSION' ||
-        stage === 'DESIGN_SIGN_OFF' || stage === 'PAYMENT_40_PERCENT') {
-      return {duration: '12', unit: 'hours'};
-    } else if (stage === 'D1_FILES_UPLOAD' || stage === 'FIRST_CUT_DESIGN_QUOTATION' ||
-               stage === 'PAYMENT_10_PERCENT' || stage === 'DQC_1_APPROVAL' || 
-               stage === 'DQC_2_APPROVAL') {
-      return {duration: '24', unit: 'hours'}; // These are 1 day but shown as 24 hours
-    } else if (stage === 'CX_APPROVAL_FOR_PRODUCTION' || stage === 'POC_MAIL' || 
-               stage === 'TIMELINE_SUBMISSION') {
-      return {duration: '8', unit: 'hours'};
-    } else {
-      return {duration: '12', unit: 'hours'}; // Default for hours stages
+  // Base durations for 1BHK (16 days total)
+  const get1BHKDuration = (stage: string): {duration: string, unit: 'hours' | 'days'} => {
+    switch(stage) {
+      // 12 hours stages
+      case 'GROUP_DESCRIPTION_UPDATE':
+      case 'MAIL_LOOP_CHAIN_2_INITIATE':
+      case 'D2_MASKING_REQUEST':
+      case 'D2_FILES_UPLOAD':
+      case 'FINAL_REVISED_FILES_READY':
+      case 'DQC_2_SUBMISSION':
+      case 'DESIGN_SIGN_OFF':
+      case 'PAYMENT_40_PERCENT':
+        return {duration: '12', unit: 'hours'};
+      
+      // 24 hours (1 day) stages
+      case 'D1_FILES_UPLOAD':
+      case 'FIRST_CUT_DESIGN_QUOTATION':
+      case 'PAYMENT_10_PERCENT':
+      case 'DQC_1_APPROVAL':
+      case 'DQC_2_APPROVAL':
+        return {duration: '24', unit: 'hours'};
+      
+      // 8 hours stages
+      case 'CX_APPROVAL_FOR_PRODUCTION':
+      case 'POC_MAIL':
+      case 'TIMELINE_SUBMISSION':
+        return {duration: '8', unit: 'hours'};
+      
+      // 2 days stages
+      case 'D1_REQUEST_MAIL_TO_TEAM':
+      case 'MATERIAL_SELECTION_MEETING':
+      case 'DQC_1_SUBMISSION':
+        return {duration: '2', unit: 'days'};
+      
+      default:
+        return {duration: '12', unit: 'hours'};
     }
-  } 
-  // Then check for days display stages
-  else if (DAYS_DISPLAY_STAGES.includes(stage)) {
-    return {duration: '2', unit: 'days'}; // All days stages are 2 days
+  };
+
+  // For 1BHK (16 days total)
+  if (project === '1BHK') {
+    return get1BHKDuration(stage);
   }
   
-  // Default for unknown stages
-  return {duration: 'Not specified', unit: 'days'};
-};
-
-const api = {
-  getLeads: async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/leads`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      return await response.json();
-    } catch (error) {
-      console.error('Error in getLeads:', error);
-      throw error;
+  // For 2BHK (20 days total)
+  if (project === '2BHK') {
+    switch(stage) {
+      // Increased durations for 2BHK
+      case 'MATERIAL_SELECTION_MEETING':
+        return {duration: '3', unit: 'days'};
+      case 'DQC_1_APPROVAL':
+        return {duration: '2', unit: 'days'};
+      default:
+        return get1BHKDuration(stage);
     }
-  },
-
-  moveLead: async (
-    leadId: string,
-    fromStage: string,
-    toStage: string,
-    note?: string
-  ) => {
-    const backendLeadId = convertToBackendId(leadId);
-    const response = await fetch(`${API_BASE_URL}/move-lead`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        leadId: backendLeadId,
-        fromStage, 
-        toStage, 
-        note: note || "" 
-      }),
-    });
-    if (!response.ok) throw new Error(`Failed to move lead: ${response.status}`);
-    return await response.json();
-  },
-
-  markLeadDone: async (
-    leadId: string,
-    fromStage: string,
-    note?: string
-  ) => {
-    const backendLeadId = convertToBackendId(leadId);
-    const response = await fetch(`${API_BASE_URL}/mark-done`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        leadId: backendLeadId,
-        fromStage, 
-        note: note || "" 
-      }),
-    });
-    if (!response.ok) throw new Error(`Failed to mark lead as done: ${response.status}`);
-    return await response.json();
-  },
-
-  addNewLead: async (
-    name: string,
-    note?: string
-  ) => {
-    const response = await fetch(`${API_BASE_URL}/leads`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, note: note || "" }),
-    });
-    if (!response.ok) throw new Error(`Failed to add lead: ${response.status}`);
-    return await response.json();
-  },
-
-  updateLeadNote: async (
-    leadId: string,
-    note: string
-  ) => {
-    const backendLeadId = convertToBackendId(leadId);
-    const response = await fetch(`${API_BASE_URL}/leads/${backendLeadId}/notes`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ note }),
-    });
-    if (!response.ok) throw new Error(`Failed to update note: ${response.status}`);
-    return await response.json();
-  },
-
-  rejectLead: async (
-    leadId: string,
-    note?: string,
-    currentStage?: string
-  ) => {
-    const backendLeadId = convertToBackendId(leadId);
-    const response = await fetch(`${API_BASE_URL}/reject`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        leadId: backendLeadId, 
-        note: note || "",
-        currentStage: currentStage || ""
-      }),
-    });
-    if (!response.ok) throw new Error(`Failed to reject lead: ${response.status}`);
-    return await response.json();
-  },
+  }
+  
+  // For 3BHK (23 days total)
+  if (project === '3BHK') {
+    switch(stage) {
+      case 'D1_REQUEST_MAIL_TO_TEAM':
+        return {duration: '2', unit: 'days'};
+      case 'D1_FILES_UPLOAD':
+        return {duration: '2', unit: 'days'};
+      case 'FIRST_CUT_DESIGN_QUOTATION':
+        return {duration: '2', unit: 'days'};
+      case 'MATERIAL_SELECTION_MEETING':
+        return {duration: '4', unit: 'days'};
+      case 'DQC_1_SUBMISSION':
+        return {duration: '2', unit: 'days'};
+      case 'DQC_1_APPROVAL':
+        return {duration: '2', unit: 'days'};
+      case 'FINAL_REVISED_FILES_READY':
+        return {duration: '1', unit: 'day'};
+      case 'DQC_2_SUBMISSION':
+        return {duration: '1', unit: 'day'};
+      case 'DQC_2_APPROVAL':
+        return {duration: '2', unit: 'days'};
+      default:
+        return get1BHKDuration(stage);
+    }
+  }
+  
+  // For 4BHK (26 days total)
+  if (project === '4BHK') {
+    switch(stage) {
+      case 'D1_REQUEST_MAIL_TO_TEAM':
+        return {duration: '2', unit: 'days'};
+      case 'D1_FILES_UPLOAD':
+        return {duration: '3', unit: 'days'};
+      case 'FIRST_CUT_DESIGN_QUOTATION':
+        return {duration: '2', unit: 'days'};
+      case 'MATERIAL_SELECTION_MEETING':
+        return {duration: '5', unit: 'days'};
+      case 'DQC_1_SUBMISSION':
+        return {duration: '2', unit: 'days'};
+      case 'DQC_1_APPROVAL':
+        return {duration: '3', unit: 'days'};
+      case 'FINAL_REVISED_FILES_READY':
+        return {duration: '1', unit: 'day'};
+      case 'DQC_2_SUBMISSION':
+        return {duration: '1', unit: 'day'};
+      case 'DQC_2_APPROVAL':
+        return {duration: '2', unit: 'days'};
+      default:
+        return get1BHKDuration(stage);
+    }
+  }
+  
+  // For 5BHK (31 days total)
+  if (project === '5BHK') {
+    switch(stage) {
+      case 'D1_REQUEST_MAIL_TO_TEAM':
+        return {duration: '2', unit: 'days'};
+      case 'D1_FILES_UPLOAD':
+        return {duration: '4', unit: 'days'};
+      case 'FIRST_CUT_DESIGN_QUOTATION':
+        return {duration: '3', unit: 'days'};
+      case 'MATERIAL_SELECTION_MEETING':
+        return {duration: '5', unit: 'days'};
+      case 'DQC_1_SUBMISSION':
+        return {duration: '3', unit: 'days'};
+      case 'DQC_1_APPROVAL':
+        return {duration: '3', unit: 'days'};
+      case 'FINAL_REVISED_FILES_READY':
+        return {duration: '1.5', unit: 'days'};
+      case 'DQC_2_SUBMISSION':
+        return {duration: '1.5', unit: 'days'};
+      case 'DQC_2_APPROVAL':
+        return {duration: '3', unit: 'days'};
+      default:
+        return get1BHKDuration(stage);
+    }
+  }
+  
+  // Default fallback
+  return get1BHKDuration(stage);
 };
 
 const organizeLeadsByStage = (backendLeads: any[]): LeadsMap => {
   const leadsMap: LeadsMap = {};
   
-  // Initialize all stages with empty arrays
   ALL_STAGES.forEach(stage => {
     leadsMap[stage] = [];
   });
@@ -228,26 +198,61 @@ const organizeLeadsByStage = (backendLeads: any[]): LeadsMap => {
     const frontendId = convertToFrontendId(lead.id);
     const leadName = lead.name || `Lead ${lead.id}`;
     
+    // Get ALL notes from backend (includes both regular and rejection notes)
+    const allNotes = lead.notes || [];
+    
+    // Process notes - your backend returns notes with timestamps like "2026-01-19 23:34: good mrng"
+    // We need to extract just the note text
+    const processedNotes = allNotes.map((note: string) => {
+      if (!note) return "";
+      // Extract note text after timestamp
+      const parts = note.split(': ');
+      if (parts.length >= 3) {
+        // Join back everything after the timestamp
+        return parts.slice(2).join(': ');
+      } else if (parts.length === 2) {
+        return parts[1];
+      }
+      return note;
+    });
+    
+    // Separate regular notes from rejection notes
+    const regularNotes = processedNotes.filter((note: string) => 
+      note && typeof note === 'string' && !note.startsWith('[REJECTED]')
+    );
+    
+    const rejectionNotes = processedNotes.filter((note: string) => 
+      note && typeof note === 'string' && note.startsWith('[REJECTED]')
+    );
+    
+    // Get the latest regular note (not rejection note)
     let leadNote = "";
-    if (lead.notes && Array.isArray(lead.notes) && lead.notes.length > 0) {
-      leadNote = lead.notes[lead.notes.length - 1];
+    if (regularNotes.length > 0) {
+      leadNote = regularNotes[regularNotes.length - 1];
     }
+    
+    // Get rejection reason from the separate field
+    const rejectionReason = lead.rejectionReason || lead.latestRejectionReason || "";
     
     const leadStage = lead.stageType || lead.stage || lead.status || "GROUP_DESCRIPTION_UPDATE";
     const stageKey = leadStage.toUpperCase();
+    
+    // Ensure stageKey exists in ALL_STAGES
+    const validStage = ALL_STAGES.includes(stageKey) ? stageKey : "GROUP_DESCRIPTION_UPDATE";
     
     const leadObj: Lead = {
       id: frontendId,
       backendId: lead.id,
       name: leadName,
-      note: leadNote,
-      status: stageKey,
+      note: leadNote, // Latest regular note (not rejection)
+      status: validStage,
       stageType: leadStage,
+      projectType: lead.projectType || 'ONE_BHK',
       currentStageStartedAt: lead.currentStageStartedAt,
       currentStageDeadlineAt: lead.currentStageDeadlineAt,
       daysRemaining: lead.daysRemaining,
       hoursRemaining: lead.hoursRemaining,
-      overdue: lead.overdue,
+      overdue: lead.overdue || false,
       projectStartDate: lead.projectStartDate, 
       projectEndDate: lead.projectEndDate,     
       rejectedStageCount: lead.rejectedStageCount || 0,
@@ -256,19 +261,26 @@ const organizeLeadsByStage = (backendLeads: any[]): LeadsMap => {
       extendedProjectDurationDays: lead.extendedProjectDurationDays,
       cumulativeDaysElapsed: lead.cumulativeDaysElapsed,
       cumulativeDaysScheduled: lead.cumulativeDaysScheduled,
-      projectStatus: lead.projectStatus
+      projectStatus: lead.projectStatus,
+      rejectionImpact: lead.rejectionImpactDisplay || lead.rejectionImpact || "",
+      // Get rejection reason from separate field
+      rejectedReason: rejectionReason,
+      // Store all notes (processed)
+      allNotes: processedNotes,
+      // Store regular and rejection notes separately
+      regularNotes: regularNotes,
+      rejectionNotes: rejectionNotes,
+      // Store raw notes for reference
+      rawNotes: allNotes
     };
     
-    // SAFEST APPROACH: Use spread operator instead of .push()
-    if (leadsMap[stageKey]) {
-      leadsMap[stageKey] = [...leadsMap[stageKey], leadObj];
+    if (leadsMap[validStage]) {
+      leadsMap[validStage] = [...leadsMap[validStage], leadObj];
     } else {
-      // If stage doesn't exist, use GROUP_DESCRIPTION_UPDATE
       const defaultStage = "GROUP_DESCRIPTION_UPDATE";
       if (leadsMap[defaultStage]) {
         leadsMap[defaultStage] = [...leadsMap[defaultStage], leadObj];
       } else {
-        // If default stage doesn't exist, initialize it
         leadsMap[defaultStage] = [leadObj];
       }
     }
@@ -278,6 +290,7 @@ const organizeLeadsByStage = (backendLeads: any[]): LeadsMap => {
 };
 
 export default function Board() {
+  const [isClient, setIsClient] = useState(false);
   const [leads, setLeads] = useState<LeadsMap>({});
   const [loading, setLoading] = useState(false);
   const [dragInProgress, setDragInProgress] = useState(false);
@@ -285,18 +298,24 @@ export default function Board() {
   const [unlocked, setUnlocked] = useState(false);
   const [newName, setNewName] = useState("");
   const [newNote, setNewNote] = useState("");
+  const [selectedProjectType, setSelectedProjectType] = useState("ONE_BHK");
   const [leadToReject, setLeadToReject] = useState<{stage: string, index: number} | null>(null);
   const [rejectNote, setRejectNote] = useState("");
   const [hiddenStages, setHiddenStages] = useState<Set<string>>(new Set());
+  const [lastOperationTime, setLastOperationTime] = useState<number>(0);
+  const [apiError, setApiError] = useState<string | null>(null);
+
+  // Initialize client-side state
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   const windowSize = 4;
   const STATIC_STAGE = "GROUP_DESCRIPTION_UPDATE";
   const normalizedAll = ALL_STAGES.map((s) => s.trim());
   const LAST_STAGE_INDEX = normalizedAll.length - 1;
 
-  const stagesToShow = normalizedAll.filter(
-    (s) => s !== "FIRST_CUT_DESIGN_QUOTATION" || unlocked
-  );
+  const stagesToShow = normalizedAll;
 
   const visiblePipelineStages = stagesToShow.filter(
     (s) => s === STATIC_STAGE || !hiddenStages.has(s)
@@ -320,13 +339,32 @@ export default function Board() {
     setLeads(initialLeads);
   }, []);
 
-  // Fetch leads from database
-  const fetchLeads = async () => {
+  // Fetch leads from database - wrapped in useCallback to prevent unnecessary re-renders
+  const fetchLeads = useCallback(async () => {
+    if (!isClient) return;
+    
     setLoading(true);
+    setApiError(null);
     try {
-      const leadsData = await api.getLeads();
-      const leadsArray = Array.isArray(leadsData) ? leadsData : [];
-      const leadsMap = organizeLeadsByStage(leadsArray);
+      console.log('Fetching leads from API...');
+      const leadsData = await leadApi.getLeads();
+      console.log('Raw API response:', leadsData);
+      
+      // Check if we got valid data
+      if (!leadsData || !Array.isArray(leadsData)) {
+        console.warn('Invalid leads data received:', leadsData);
+        throw new Error('Invalid data received from server');
+      }
+      
+      const leadsMap = organizeLeadsByStage(leadsData);
+      console.log('Organized leads map:', leadsMap);
+      
+      // Log first lead details for debugging
+      if (leadsData.length > 0) {
+        console.log('First lead details:', leadsData[0]);
+        console.log('First lead notes:', leadsData[0].notes);
+        console.log('First lead rejectionReason:', leadsData[0].rejectionReason);
+      }
       
       if (leadsMap["FIRST_CUT_DESIGN_QUOTATION"] && leadsMap["FIRST_CUT_DESIGN_QUOTATION"].length > 0) {
         setUnlocked(true);
@@ -337,183 +375,149 @@ export default function Board() {
       setLeads(leadsMap);
     } catch (error: any) {
       console.error('Error loading leads:', error);
-      // Initialize with empty arrays for all stages on error
+      setApiError(`Failed to load leads: ${error.message}`);
+      
       const emptyLeads: LeadsMap = {};
       ALL_STAGES.forEach(stage => { 
         emptyLeads[stage] = []; 
       });
       setLeads(emptyLeads);
       
-      // Show user-friendly error
       if (error.message.includes('fetch') || error.message.includes('network') || error.message.includes('Failed')) {
-        alert('Cannot connect to server. Please check if backend is running at http://localhost:8080');
-      } else {
-        alert(`Error loading leads: ${error.message}`);
+        console.error('Cannot connect to server. Please check if backend is running at http://localhost:8080');
+        setApiError('Cannot connect to server. Make sure backend is running at http://localhost:8080');
       }
     } finally {
+      setLoading(false);
+    }
+  }, [isClient]);
+
+  // Load leads on component mount with auto-refresh every 30 seconds
+  useEffect(() => {
+    if (isClient) {
+      fetchLeads();
+       // Refresh every 30 seconds
+     
+    }
+  }, [isClient, fetchLeads]);
+
+  // Add new lead
+  const addLead = async () => {
+    if (!newName.trim() || loading || !isClient) return;
+    setLoading(true);
+    setApiError(null);
+    try {
+      await leadApi.addNewLead(newName.trim(), newNote.trim(), selectedProjectType);
+      // Add delay to ensure backend processes before refresh
+      setTimeout(fetchLeads, 500);
+      setNewName("");
+      setNewNote("");
+      setLastOperationTime(Date.now());
+    } catch (error: any) {
+      console.error(`Failed to add lead: ${error.message}`);
+      setApiError(`Failed to add lead: ${error.message}`);
       setLoading(false);
     }
   };
 
-  // Load leads on component mount
-  useEffect(() => {
-    fetchLeads();
-    const intervalId = setInterval(fetchLeads, 60000);
-    return () => clearInterval(intervalId);
-  }, []);
+  // Update lead note (regular note, not rejection reason)
+  const updateLeadNote = useCallback(async (stage: string, index: number, note: string) => {
+    if (!isClient || !note.trim()) return;
+    
+    const currentItems = Array.from(leads[stage] ?? []);
+    const lead = currentItems[index];
+    if (!lead) return;
 
-  // Add new lead
-  async function addLead() {
-    if (!newName.trim() || loading) return;
     setLoading(true);
+    setApiError(null);
     try {
-      const lead = await api.addNewLead(newName.trim(), newNote.trim());
-      const frontendId = convertToFrontendId(lead.id);
-      const newLead: Lead = {
-        id: frontendId,
-        backendId: lead.id,
-        name: lead.name || newName.trim(),
-        note: lead.note || newNote.trim(),
-        status: STATIC_STAGE,
-        stageType: STATIC_STAGE
-      };
-      setLeads((prev) => {
-        const next = { ...prev };
-        if (!next[STATIC_STAGE]) next[STATIC_STAGE] = [];
-        next[STATIC_STAGE] = [newLead, ...next[STATIC_STAGE]];
-        return next;
-      });
-      setNewName("");
-      setNewNote("");
+      // Send note to backend
+      await leadApi.updateLeadNote(lead.id, note.trim());
+      // Add delay to ensure backend processes before refresh
+      setTimeout(fetchLeads, 500);
+      setLastOperationTime(Date.now());
     } catch (error: any) {
-      alert(`Failed to add lead: ${error.message}`);
-    } finally {
+      console.error(`Failed to save note: ${error.message}`);
+      setApiError(`Failed to save note: ${error.message}`);
       setLoading(false);
     }
-  }
+  }, [isClient, leads, fetchLeads]);
 
-  // Update lead note - FIXED with safe array access
-  async function updateLeadNote(stage: string, index: number, note: string) {
-    const currentItems = Array.from(leads[stage] ?? []);
-    const lead = currentItems[index];
-    if (!lead) return;
-
-    const originalNote = lead.note || "";
-    setLeads((prev) => {
-      const next = { ...prev };
-      const items = Array.from(next[stage] ?? []);
-      if (!items[index]) return prev;
-      items[index] = { ...items[index], note };
-      next[stage] = items;
-      return next;
-    });
-
+  // Mark lead as done
+  const handleMarkLeadDone = useCallback(async (stage: string, index: number) => {
+    if (loading || !isClient) return;
+    
+    setLoading(true);
+    setApiError(null);
     try {
-      await api.updateLeadNote(lead.id, note);
-    } catch (error: any) {
-      setLeads((prev) => {
-        const next = { ...prev };
-        const items = Array.from(next[stage] ?? []);
-        if (!items[index]) return prev;
-        items[index] = { ...items[index], note: originalNote };
-        next[stage] = items;
-        return next;
-      });
-      alert(`Failed to save note: ${error.message}`);
-    }
-  }
+      const currentItems = Array.from(leads[stage] ?? []);
+      const lead = currentItems[index];
+      if (!lead) return;
 
-  // Mark lead as done - FIXED with safe array access
-  async function handleMarkLeadDone(stage: string, index: number) {
-    if (loading) return;
-    const currentItems = Array.from(leads[stage] ?? []);
-    const lead = currentItems[index];
-    if (!lead) return;
-
-    const stageIdx = normalizedAll.indexOf(stage);
-    if (stageIdx === LAST_STAGE_INDEX) {
-      setLoading(true);
-      try {
-        await api.markLeadDone(lead.id, stage, lead.note);
-        setLeads((prev) => {
-          const next = { ...prev };
-          const items = Array.from(next[stage] ?? []);
-          items.splice(index, 1);
-          next[stage] = items;
-          return next;
-        });
-      } catch (error: any) {
-        alert(`Failed to complete lead: ${error.message}`);
-      } finally {
-        setLoading(false);
+      // Send the current note with the mark done request
+      await leadApi.markLeadDone(lead.id, stage, lead.note || "");
+      // Add delay to ensure backend processes before refresh
+      setTimeout(fetchLeads, 500);
+      
+      if (stage === "FIRST_CUT_DESIGN_QUOTATION") {
+        setUnlocked(true);
       }
-      return;
-    }
-
-    const nextStage = normalizedAll[stageIdx + 1];
-    setLoading(true);
-    try {
-      await api.markLeadDone(lead.id, stage, lead.note);
-      setLeads((prev) => {
-        const next = { ...prev };
-        const items = Array.from(next[stage] ?? []);
-        items.splice(index, 1);
-        next[stage] = items;
-        if (!next[nextStage]) next[nextStage] = [];
-        next[nextStage] = [...next[nextStage], { 
-          ...lead, 
-          status: nextStage,
-          stageType: nextStage
-        }];
-        if (nextStage === "FIRST_CUT_DESIGN_QUOTATION") setUnlocked(true);
-        return next;
-      });
+      setLastOperationTime(Date.now());
     } catch (error: any) {
-      alert(`Failed to move lead: ${error.message}`);
-    } finally {
+      console.error(`Failed to move lead: ${error.message}`);
+      setApiError(`Failed to move lead: ${error.message}`);
       setLoading(false);
     }
-  }
+  }, [loading, isClient, leads, fetchLeads]);
 
-  // Handle reject lead - FIXED with safe array access
-  async function handleRejectLead(stage: string, index: number) {
+  // Handle reject lead
+  const handleRejectLead = useCallback((stage: string, index: number) => {
+    if (!isClient) return;
+    
     const currentItems = Array.from(leads[stage] ?? []);
     const lead = currentItems[index];
     if (!lead) return;
     setLeadToReject({ stage, index });
     setRejectNote("");
-  }
+  }, [isClient, leads]);
 
   // Confirm reject lead
-  async function confirmRejectLead() {
-    if (!leadToReject || loading) return;
+  const confirmRejectLead = async () => {
+    if (!leadToReject || loading || !isClient) return;
     const { stage, index } = leadToReject;
     const currentItems = Array.from(leads[stage] ?? []);
     const lead = currentItems[index];
     if (!lead) return;
 
     setLoading(true);
+    setApiError(null);
     try {
-      const note = rejectNote ? `Rejection reason: ${rejectNote}` : "Lead rejected";
-      await api.rejectLead(lead.id, note, stage);
-      await fetchLeads(); // Refresh to get updated project end date with penalty
+      // The rejectNote will be stored as rejectionReason in the database
+      const rejectionReason = rejectNote.trim() || "Lead rejected";
+      await leadApi.rejectLead(lead.id, rejectionReason, stage);
+      // Add delay to ensure backend processes before refresh
+      setTimeout(fetchLeads, 500);
+      setLastOperationTime(Date.now());
     } catch (error: any) {
-      alert(`Failed to reject lead: ${error.message}`);
-      await fetchLeads();
+      console.error(`Failed to reject lead: ${error.message}`);
+      setApiError(`Failed to reject lead: ${error.message}`);
+      setTimeout(fetchLeads, 500);
     } finally {
       setLoading(false);
       setLeadToReject(null);
       setRejectNote("");
     }
-  }
+  };
 
-  function cancelReject() {
+  const cancelReject = () => {
     setLeadToReject(null);
     setRejectNote("");
-  }
+  };
 
-  // Drag and drop handler - FIXED with safe array access
-  async function onDragEnd(result: DropResult) {
+  // Drag and drop handler
+  const onDragEnd = async (result: DropResult) => {
+    if (!isClient) return;
+    
     const { source, destination } = result;
     if (!destination) {
       setDragInProgress(false);
@@ -523,48 +527,41 @@ export default function Board() {
     const src = source.droppableId;
     const dst = destination.droppableId;
 
-    if (src === dst) {
-      const items = Array.from(leads[src] ?? []);
-      const [moved] = items.splice(source.index, 1);
-      items.splice(destination.index, 0, moved);
-      setLeads({ ...leads, [src]: items });
-      setDragInProgress(false);
-      return;
-    }
-
-    const srcItems = Array.from(leads[src] ?? []);
-    const [moved] = srcItems.splice(source.index, 1);
-    if (!moved) {
-      setDragInProgress(false);
-      return;
-    }
-
-    const dstItems = Array.from(leads[dst] ?? []);
-    const movedUpdated = { 
-      ...moved, 
-      status: dst,
-      stageType: dst
-    };
-    dstItems.splice(destination.index, 0, movedUpdated);
-    const updatedLeads = { ...leads, [src]: srcItems, [dst]: dstItems };
-    setLeads(updatedLeads);
-    setDragInProgress(false);
-
     setLoading(true);
+    setDragInProgress(false);
+    setApiError(null);
+    
     try {
-      await api.moveLead(moved.id, src, dst, moved.note);
-      if (dst === "FIRST_CUT_DESIGN_QUOTATION") setUnlocked(true);
+      const srcItems = Array.from(leads[src] ?? []);
+      const [moved] = srcItems.splice(source.index, 1);
+      if (!moved) {
+        setLoading(false);
+        return;
+      }
+
+      // Send empty note to prevent duplication - the note is already stored separately
+      await leadApi.moveLead(moved.id, src, dst, "");
+      
+      // Add delay to ensure backend processes before refresh
+      setTimeout(fetchLeads, 500);
+      
+      if (dst === "FIRST_CUT_DESIGN_QUOTATION") {
+        setUnlocked(true);
+      }
+      setLastOperationTime(Date.now());
     } catch (error: any) {
-      await fetchLeads();
-      alert(`Failed to move lead: ${error.message}`);
+      console.error(`Failed to move lead: ${error.message}`);
+      setApiError(`Failed to move lead: ${error.message}`);
+      setTimeout(fetchLeads, 500);
     } finally {
       setLoading(false);
     }
-  }
+  };
 
-  function onDragStart() {
+  const onDragStart = () => {
+    if (!isClient) return;
     setDragInProgress(true);
-  }
+  };
 
   const allNonStatic = normalizedAll.filter((s) => s !== STATIC_STAGE);
   const currentFirstVisibleStage = scrollableStages[startIndex] ?? scrollableStages[0] ?? allNonStatic[0];
@@ -572,10 +569,33 @@ export default function Board() {
   const canPrev = currentFirstIndexInAll > 0;
   const canNext = startIndex + (windowSize - 1) < scrollableStages.length;
 
-  const isInteractionDisabled = loading || dragInProgress;
+  const isInteractionDisabled = loading || dragInProgress || !isClient;
+
+  // Don't render during SSR
+  if (!isClient) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
 
   return (
-    <>
+    <div className="p-4">
+      {apiError && (
+        <div className="fixed top-4 right-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded z-50">
+          <div className="flex justify-between items-center">
+            <span>{apiError}</span>
+            <button 
+              onClick={() => setApiError(null)}
+              className="text-red-700 hover:text-red-900"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+      
       {loading && (
         <div className="fixed inset-0 bg-black/10 flex items-center justify-center z-50">
           <div className="bg-white p-4 rounded-lg shadow-lg">
@@ -604,6 +624,9 @@ export default function Board() {
                 rows={3}
                 placeholder="Enter reason for rejection..."
               />
+              <p className="text-xs text-gray-500 mt-1">
+                This reason will be stored separately from regular notes and will be displayed in the lead card.
+              </p>
             </div>
             <div className="flex justify-end gap-3">
               <button
@@ -625,66 +648,66 @@ export default function Board() {
         </div>
       )}
       
-      <div className="flex gap-4 mb-4 items-center">
-        <div className="flex gap-2 items-center">
-          <input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="Lead name"
-            className="px-3 py-2 border rounded-md w-40 disabled:opacity-50"
-            disabled={isInteractionDisabled}
-            onKeyDown={(e) => e.key === 'Enter' && newName.trim() && addLead()}
-          />
-          <input
-            value={newNote}
-            onChange={(e) => setNewNote(e.target.value)}
-            placeholder="Note (optional)"
-            className="px-3 py-2 border rounded-md w-60 disabled:opacity-50"
-            disabled={isInteractionDisabled}
-            onKeyDown={(e) => e.key === 'Enter' && newName.trim() && addLead()}
-          />
-          <button 
-            onClick={addLead} 
-            className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            disabled={isInteractionDisabled || !newName.trim()}
-          >
-            Add Lead
-          </button>
-          <button 
-            onClick={fetchLeads}
-            className="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
-            disabled={loading}
-          >
-            <svg className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            Refresh
-          </button>
-        </div>
+      <div className="flex flex-col gap-4 mb-4">
+        <div className="flex gap-4 items-center">
+          <div className="flex gap-2 items-center">
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Lead name"
+              className="px-3 py-2 border rounded-md w-40 disabled:opacity-50"
+              disabled={isInteractionDisabled}
+              onKeyDown={(e) => e.key === 'Enter' && newName.trim() && addLead()}
+            />
+            <input
+              value={newNote}
+              onChange={(e) => setNewNote(e.target.value)}
+              placeholder="Note (optional)"
+              className="px-3 py-2 border rounded-md w-60 disabled:opacity-50"
+              disabled={isInteractionDisabled}
+              onKeyDown={(e) => e.key === 'Enter' && newName.trim() && addLead()}
+            />
+            
+            <ProjectTypeSelector
+              selectedType={selectedProjectType}
+              onChange={setSelectedProjectType}
+              disabled={isInteractionDisabled}
+              className="w-48"
+            />
+            
+            <button 
+              onClick={addLead} 
+              className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              disabled={isInteractionDisabled || !newName.trim()}
+            >
+              Add Lead
+            </button>
+          </div>
 
-        <div className="ml-auto flex gap-2">
-          <button
-            disabled={!canPrev || isInteractionDisabled}
-            onClick={() => setStartIndex(Math.max(0, startIndex - 1))}
-            className={`px-4 py-2 rounded-md ${
-              !canPrev || isInteractionDisabled 
-                ? 'bg-gray-300 cursor-not-allowed opacity-50' 
-                : 'bg-gray-200 hover:bg-gray-300 transition-colors'
-            }`}
-          >
-            ◀
-          </button>
-          <button
-            disabled={!canNext || isInteractionDisabled}
-            onClick={() => setStartIndex(startIndex + 1)}
-            className={`px-4 py-2 rounded-md ${
-              !canNext || isInteractionDisabled 
-                ? 'bg-gray-300 cursor-not-allowed opacity-50' 
-                : 'bg-gray-200 hover:bg-gray-300 transition-colors'
-            }`}
-          >
-            ▶
-          </button>
+          <div className="ml-auto flex gap-2">
+            <button
+              disabled={!canPrev || isInteractionDisabled}
+              onClick={() => setStartIndex(Math.max(0, startIndex - 1))}
+              className={`px-4 py-2 rounded-md ${
+                !canPrev || isInteractionDisabled 
+                  ? 'bg-gray-300 cursor-not-allowed opacity-50' 
+                  : 'bg-gray-200 hover:bg-gray-300 transition-colors'
+              }`}
+            >
+              ◀
+            </button>
+            <button
+              disabled={!canNext || isInteractionDisabled}
+              onClick={() => setStartIndex(startIndex + 1)}
+              className={`px-4 py-2 rounded-md ${
+                !canNext || isInteractionDisabled 
+                  ? 'bg-gray-300 cursor-not-allowed opacity-50' 
+                  : 'bg-gray-200 hover:bg-gray-300 transition-colors'
+              }`}
+            >
+              ▶
+            </button>
+          </div>
         </div>
       </div>
 
@@ -696,57 +719,69 @@ export default function Board() {
                 <div 
                   ref={provided.innerRef} 
                   {...provided.droppableProps}
-                  className={snapshot.isDraggingOver ? "bg-blue-50 rounded-lg p-1" : ""}
+                  className={`rounded-lg p-1 ${snapshot.isDraggingOver ? "bg-blue-50" : ""}`}
                 >
                   <StageColumn 
                     title={formatStageName(STATIC_STAGE)} 
                     duration="12 hours" 
                     isStatic
                   >
-                    {(leads[STATIC_STAGE] ?? []).map((lead, index) => (
-                      <Draggable 
-                        key={lead.id} 
-                        draggableId={lead.id} 
-                        index={index}
-                        isDragDisabled={isInteractionDisabled}
-                      >
-                        {(provided, snapshot) => (
-                          <div 
-                            ref={provided.innerRef} 
-                            {...provided.draggableProps} 
-                            {...provided.dragHandleProps}
-                            className={`mb-2 ${snapshot.isDragging ? 'opacity-50' : ''} ${isInteractionDisabled ? "opacity-60" : ""}`}
-                          >
-                            <LeadCard
-                              leadId={lead.id}
-                              leadName={lead.name}
-                              leadNote={lead.note}
-                              status={formatStageName(lead.status || STATIC_STAGE)}
-                              onNoteChange={(n) => updateLeadNote(STATIC_STAGE, index, n)}
-                              onReject={() => handleRejectLead(STATIC_STAGE, index)}
-                              disabled={isInteractionDisabled}
-                              hoursRemaining={lead.hoursRemaining}
-                              daysRemaining={undefined}
-                              overdue={lead.overdue}
-                              stageStartedAt={lead.currentStageStartedAt}
-                              deadlineAt={lead.currentStageDeadlineAt}
-                              allowedDuration="12 hours"
-                              // Project timeline props
-                              projectStartDate={lead.projectStartDate}
-                              projectEndDate={lead.projectEndDate}
-                              rejectedStageCount={lead.rejectedStageCount}
-                              // NEW PROPS
-                              rejectionTimeExtensionDays={lead.rejectionTimeExtensionDays}
-                              originalProjectDurationDays={lead.originalProjectDurationDays}
-                              extendedProjectDurationDays={lead.extendedProjectDurationDays}
-                              cumulativeDaysElapsed={lead.cumulativeDaysElapsed}
-                              cumulativeDaysScheduled={lead.cumulativeDaysScheduled}
-                              projectStatus={lead.projectStatus}
-                            />
-                          </div>
-                        )}
-                      </Draggable>
-                    ))}
+                    {(leads[STATIC_STAGE] ?? []).map((lead, index) => {
+                      const stageDuration = getStageDuration(STATIC_STAGE, lead.projectType || selectedProjectType);
+                      const stageDurationText = `${stageDuration.duration} ${stageDuration.unit}`;
+                      
+                      return (
+                        <Draggable 
+                          key={lead.id} 
+                          draggableId={lead.id} 
+                          index={index}
+                          isDragDisabled={isInteractionDisabled}
+                        >
+                          {(provided, snapshot) => (
+                            <div 
+                              ref={provided.innerRef} 
+                              {...provided.draggableProps} 
+                              {...provided.dragHandleProps}
+                              className={`mb-2 ${snapshot.isDragging ? 'opacity-50' : ''} ${isInteractionDisabled ? "opacity-60" : ""}`}
+                            >
+                              <LeadCard
+                                leadId={lead.id}
+                                leadName={lead.name}
+                                leadNote={lead.note}
+                                status={formatStageName(lead.status || STATIC_STAGE)}
+                                projectType={lead.projectType || selectedProjectType}
+                                onNoteChange={(n) => updateLeadNote(STATIC_STAGE, index, n)}
+                                onReject={() => handleRejectLead(STATIC_STAGE, index)}
+                                onMarkDone={() => handleMarkLeadDone(STATIC_STAGE, index)}
+                                disabled={isInteractionDisabled}
+                                hoursRemaining={lead.hoursRemaining}
+                                daysRemaining={undefined}
+                                overdue={lead.overdue}
+                                stageStartedAt={lead.currentStageStartedAt}
+                                deadlineAt={lead.currentStageDeadlineAt}
+                                allowedDuration={stageDurationText}
+                                // Project timeline props
+                                projectStartDate={lead.projectStartDate}
+                                projectEndDate={lead.projectEndDate}
+                                rejectedStageCount={lead.rejectedStageCount}
+                                rejectionTimeExtensionDays={lead.rejectionTimeExtensionDays}
+                                originalProjectDurationDays={lead.originalProjectDurationDays}
+                                extendedProjectDurationDays={lead.extendedProjectDurationDays}
+                                cumulativeDaysElapsed={lead.cumulativeDaysElapsed}
+                                cumulativeDaysScheduled={lead.cumulativeDaysScheduled}
+                                projectStatus={lead.projectStatus}
+                                rejectionImpact={lead.rejectionImpact}
+                                rejectedReason={lead.rejectedReason}
+                                // Pass all notes and rejection notes separately
+                              
+        
+                               
+                              />
+                            </div>
+                          )}
+                        </Draggable>
+                      );
+                    })}
                     {provided.placeholder}
                   </StageColumn>
                 </div>
@@ -757,63 +792,73 @@ export default function Board() {
           <div className="flex-1 overflow-x-auto py-2">
             <div className="flex gap-4 min-w-max">
               {scrollableStages.slice(startIndex, startIndex + windowSize - 1).map((stage) => {
-                const stageDurationInfo = getStageDuration(stage);
-                const stageDuration = `${stageDurationInfo.duration} ${stageDurationInfo.unit}`;
-                const isHoursDisplay = stageDurationInfo.unit === 'hours';
-                
                 return (
                   <Droppable key={stage} droppableId={stage}>
                     {(provided, snapshot) => (
                       <div 
                         ref={provided.innerRef} 
                         {...provided.droppableProps}
-                        className={snapshot.isDraggingOver ? "bg-blue-50 rounded-lg p-1" : ""}
+                        className={`rounded-lg p-1 ${snapshot.isDraggingOver ? "bg-blue-50" : ""}`}
                       >
-                        <StageColumn title={formatStageName(stage)} duration={stageDuration}>
-                          {(leads[stage] ?? []).map((lead, index) => (
-                            <Draggable 
-                              key={lead.id} 
-                              draggableId={lead.id} 
-                              index={index}
-                              isDragDisabled={isInteractionDisabled}
-                            >
-                              {(provided, snapshot) => (
-                                <div 
-                                  ref={provided.innerRef} 
-                                  {...provided.draggableProps} 
-                                  {...provided.dragHandleProps}
-                                  className={`mb-2 ${snapshot.isDragging ? 'opacity-50' : ''} ${isInteractionDisabled ? "opacity-60" : ""}`}
-                                >
-                                  <LeadCard
-                                    leadId={lead.id}
-                                    leadName={lead.name}
-                                    leadNote={lead.note}
-                                    status={formatStageName(stage)}
-                                    onNoteChange={(n) => updateLeadNote(stage, index, n)}
-                                    onReject={() => handleRejectLead(stage, index)}
-                                    disabled={isInteractionDisabled}
-                                    hoursRemaining={isHoursDisplay ? lead.hoursRemaining : undefined}
-                                    daysRemaining={!isHoursDisplay ? lead.daysRemaining : undefined}
-                                    overdue={lead.overdue}
-                                    stageStartedAt={lead.currentStageStartedAt}
-                                    deadlineAt={lead.currentStageDeadlineAt}
-                                    allowedDuration={stageDuration}
-                                    // Project timeline props
-                                    projectStartDate={lead.projectStartDate}
-                                    projectEndDate={lead.projectEndDate}
-                                    rejectedStageCount={lead.rejectedStageCount}
-                                    // NEW PROPS
-                                    rejectionTimeExtensionDays={lead.rejectionTimeExtensionDays}
-                                    originalProjectDurationDays={lead.originalProjectDurationDays}
-                                    extendedProjectDurationDays={lead.extendedProjectDurationDays}
-                                    cumulativeDaysElapsed={lead.cumulativeDaysElapsed}
-                                    cumulativeDaysScheduled={lead.cumulativeDaysScheduled}
-                                    projectStatus={lead.projectStatus}
-                                  />
-                                </div>
-                              )}
-                            </Draggable>
-                          ))}
+                        <StageColumn 
+                          title={formatStageName(stage)} 
+                          duration={getStageDuration(stage, selectedProjectType).duration + " " + getStageDuration(stage, selectedProjectType).unit}
+                        >
+                          {(leads[stage] ?? []).map((lead, index) => {
+                            const stageDuration = getStageDuration(stage, lead.projectType || selectedProjectType);
+                            const stageDurationText = `${stageDuration.duration} ${stageDuration.unit}`;
+                            const isHoursDisplay = stageDuration.unit === 'hours';
+                            
+                            return (
+                              <Draggable 
+                                key={lead.id} 
+                                draggableId={lead.id} 
+                                index={index}
+                                isDragDisabled={isInteractionDisabled}
+                              >
+                                {(provided, snapshot) => (
+                                  <div 
+                                    ref={provided.innerRef} 
+                                    {...provided.draggableProps} 
+                                    {...provided.dragHandleProps}
+                                    className={`mb-2 ${snapshot.isDragging ? 'opacity-50' : ''} ${isInteractionDisabled ? "opacity-60" : ""}`}
+                                  >
+                                    <LeadCard
+                                      leadId={lead.id}
+                                      leadName={lead.name}
+                                      leadNote={lead.note}
+                                      status={formatStageName(stage)}
+                                      projectType={lead.projectType || selectedProjectType}
+                                      onNoteChange={(n) => updateLeadNote(stage, index, n)}
+                                      onReject={() => handleRejectLead(stage, index)}
+                                      onMarkDone={() => handleMarkLeadDone(stage, index)}
+                                      disabled={isInteractionDisabled}
+                                      hoursRemaining={isHoursDisplay ? lead.hoursRemaining : undefined}
+                                      daysRemaining={!isHoursDisplay ? lead.daysRemaining : undefined}
+                                      overdue={lead.overdue}
+                                      stageStartedAt={lead.currentStageStartedAt}
+                                      deadlineAt={lead.currentStageDeadlineAt}
+                                      allowedDuration={stageDurationText}
+                                      // Project timeline props
+                                      projectStartDate={lead.projectStartDate}
+                                      projectEndDate={lead.projectEndDate}
+                                      rejectedStageCount={lead.rejectedStageCount}
+                                      rejectionTimeExtensionDays={lead.rejectionTimeExtensionDays}
+                                      originalProjectDurationDays={lead.originalProjectDurationDays}
+                                      extendedProjectDurationDays={lead.extendedProjectDurationDays}
+                                      cumulativeDaysElapsed={lead.cumulativeDaysElapsed}
+                                      cumulativeDaysScheduled={lead.cumulativeDaysScheduled}
+                                      projectStatus={lead.projectStatus}
+                                      rejectionImpact={lead.rejectionImpact}
+                                      rejectedReason={lead.rejectedReason}
+                                      // Pass all notes and rejection notes separately
+                                     
+                                    />
+                                  </div>
+                                )}
+                              </Draggable>
+                            );
+                          })}
                           {provided.placeholder}
                         </StageColumn>
                       </div>
@@ -825,6 +870,6 @@ export default function Board() {
           </div>
         </div>
       </DragDropContext>
-    </>
+    </div>
   );
 }

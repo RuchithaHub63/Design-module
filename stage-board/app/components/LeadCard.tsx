@@ -30,6 +30,9 @@ type Props = {
   projectStatus?: string;
   // NEW: Rejection impact from backend
   rejectionImpact?: string;
+  projectType?: string;
+  // NEW: Rejected reason for display
+  rejectedReason?: string;
 };
 
 const statusColor = (s?: string) => {
@@ -120,7 +123,10 @@ const LeadCard: React.FC<Props> = ({
   cumulativeDaysScheduled,
   projectStatus,
   // NEW: Rejection impact from backend
-  rejectionImpact
+  rejectionImpact,
+  projectType,
+  // NEW: Rejected reason
+  rejectedReason
 }) => {
   const [showModal, setShowModal] = useState(false);
   const [note, setNote] = useState(leadNote);
@@ -201,6 +207,23 @@ const LeadCard: React.FC<Props> = ({
             ID: {leadId}
           </div>
         </div>
+
+        
+
+        {/* REJECTED REASON BANNER - Added Here */}
+        {status === 'rejected' && rejectedReason ? (
+          <div className="mb-3 p-2 bg-red-50 border border-red-200 rounded-md">
+            <div className="flex items-start">
+              <svg className="w-4 h-4 text-red-500 mt-0.5 mr-2 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+              </svg>
+              <div>
+                <strong className="text-red-700 text-sm">Rejected: </strong>
+                <span className="text-red-600 text-sm">{rejectedReason}</span>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {/* Time Remaining - Single display with priority logic */}
         {timeRemainingText && (
@@ -283,6 +306,7 @@ const LeadCard: React.FC<Props> = ({
                     <h2 className="text-xl font-semibold text-gray-800">Lead Details</h2>
                     <p className="text-sm text-gray-500 mt-1">Lead ID: {leadId}</p>
                   </div>
+                 
                   <button
                     onClick={handleCloseModal}
                     className="text-gray-400 hover:text-gray-600 text-2xl hover:scale-110 transition-transform"
@@ -293,6 +317,21 @@ const LeadCard: React.FC<Props> = ({
 
                 {/* Modal Body */}
                 <div className="p-6">
+                  {/* Rejected Reason Banner in Modal - Added Here */}
+                  {status === 'rejected' && rejectedReason && (
+                    <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+                      <div className="flex items-center">
+                        <svg className="w-5 h-5 text-red-500 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                        </svg>
+                        <div>
+                          <strong className="text-red-700">Rejection Reason: </strong>
+                          <span className="text-red-600">{rejectedReason}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Project Status Badge */}
                   {projectStatus && (
                     <div className={`mb-4 p-3 rounded-lg text-center font-medium ${getProjectStatusColor(projectStatus)}`}>
@@ -342,6 +381,8 @@ const LeadCard: React.FC<Props> = ({
                         </div>
                       </div>
                     </div>
+
+                    
 
                     {/* Status & Timestamps */}
                     <div className="space-y-4">
@@ -431,11 +472,11 @@ const LeadCard: React.FC<Props> = ({
                         autoFocus
                       />
                     ) : note ? (
-                      <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 min-h-[100px] hover:bg-gray-100 transition-colors">
+                      <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 min-h-25 hover:bg-gray-100 transition-colors">
                         <p className="text-gray-700 whitespace-pre-wrap">{note}</p>
                       </div>
                     ) : (
-                      <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 min-h-[100px] flex items-center justify-center hover:bg-gray-100 transition-colors">
+                      <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 min-h-25 flex items-center justify-center hover:bg-gray-100 transition-colors">
                         <p className="text-gray-500">No notes added yet</p>
                       </div>
                     )}
@@ -465,30 +506,17 @@ const LeadCard: React.FC<Props> = ({
                           </div>
                         )}
                         
-                        {/* Cumulative Timeline Progress */}
-                        {cumulativeDaysElapsed !== undefined && cumulativeDaysScheduled !== undefined && (
-                          <div className="md:col-span-2 border-t pt-2 mt-2">
-                            <div className="flex justify-between mb-1">
-                              <span className="text-blue-600 font-medium">Timeline Progress:</span>
-                              <span className="text-gray-700">
-                                {cumulativeDaysElapsed} days elapsed / {cumulativeDaysScheduled} days scheduled
-                              </span>
-                            </div>
-                            <div className="w-full bg-gray-200 rounded-full h-2.5">
-                              <div 
-                                className={`h-2.5 rounded-full ${
-                                  cumulativeDaysElapsed > cumulativeDaysScheduled ? 'bg-red-600' : 'bg-green-600'
-                                }`}
-                                style={{ 
-                                  width: `${Math.min(100, (cumulativeDaysElapsed / cumulativeDaysScheduled) * 100)}%` 
-                                }}
-                              ></div>
-                            </div>
-                            <div className="mt-1 text-xs text-gray-500">
-                              {cumulativeDaysElapsed > cumulativeDaysScheduled 
-                                ? `Behind schedule by ${cumulativeDaysElapsed - cumulativeDaysScheduled} days`
-                                : `On track (${cumulativeDaysScheduled - cumulativeDaysElapsed} days ahead)`
-                              }
+                        {/* ADDED: Rejection Reason Display */}
+                        {rejectedReason && (
+                          <div className="md:col-span-2 p-3 bg-red-50 rounded-lg border border-red-200">
+                            <div className="flex items-start">
+                              <svg className="w-4 h-4 text-red-500 mt-0.5 mr-2 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                              </svg>
+                              <div>
+                                <div className="text-red-700 font-medium text-sm mb-1">Rejection Reason:</div>
+                                <div className="text-red-600 text-sm">{rejectedReason}</div>
+                              </div>
                             </div>
                           </div>
                         )}
@@ -573,15 +601,6 @@ const LeadCard: React.FC<Props> = ({
                     className="px-6 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
                   >
                     Close
-                  </button>
-                  <button
-                    onClick={() => {
-                      handleSaveNote();
-                      handleCloseModal();
-                    }}
-                    className="px-6 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-                  >
-                    Save Changes
                   </button>
                 </div>
               </div>
