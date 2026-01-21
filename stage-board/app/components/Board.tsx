@@ -1,4 +1,5 @@
 "use client";
+
 import React, { useState, useEffect, useCallback } from "react";
 import dynamic from 'next/dynamic';
 
@@ -396,8 +397,6 @@ export default function Board() {
   useEffect(() => {
     if (isClient) {
       fetchLeads();
-       // Refresh every 30 seconds
-     
     }
   }, [isClient, fetchLeads]);
 
@@ -408,8 +407,7 @@ export default function Board() {
     setApiError(null);
     try {
       await leadApi.addNewLead(newName.trim(), newNote.trim(), selectedProjectType);
-      // Add delay to ensure backend processes before refresh
-      setTimeout(fetchLeads, 500);
+      setTimeout(fetchLeads, 300);
       setNewName("");
       setNewNote("");
       setLastOperationTime(Date.now());
@@ -433,8 +431,7 @@ export default function Board() {
     try {
       // Send note to backend
       await leadApi.updateLeadNote(lead.id, note.trim());
-      // Add delay to ensure backend processes before refresh
-      setTimeout(fetchLeads, 500);
+      setTimeout(fetchLeads, 300);
       setLastOperationTime(Date.now());
     } catch (error: any) {
       console.error(`Failed to save note: ${error.message}`);
@@ -456,8 +453,7 @@ export default function Board() {
 
       // Send the current note with the mark done request
       await leadApi.markLeadDone(lead.id, stage, lead.note || "");
-      // Add delay to ensure backend processes before refresh
-      setTimeout(fetchLeads, 500);
+      setTimeout(fetchLeads, 300);
       
       if (stage === "FIRST_CUT_DESIGN_QUOTATION") {
         setUnlocked(true);
@@ -495,13 +491,12 @@ export default function Board() {
       // The rejectNote will be stored as rejectionReason in the database
       const rejectionReason = rejectNote.trim() || "Lead rejected";
       await leadApi.rejectLead(lead.id, rejectionReason, stage);
-      // Add delay to ensure backend processes before refresh
-      setTimeout(fetchLeads, 500);
+      setTimeout(fetchLeads, 300);
       setLastOperationTime(Date.now());
     } catch (error: any) {
       console.error(`Failed to reject lead: ${error.message}`);
       setApiError(`Failed to reject lead: ${error.message}`);
-      setTimeout(fetchLeads, 500);
+      setTimeout(fetchLeads, 300);
     } finally {
       setLoading(false);
       setLeadToReject(null);
@@ -514,7 +509,7 @@ export default function Board() {
     setRejectNote("");
   };
 
-  // Drag and drop handler
+  // FIXED: Instant drag and drop handler with duration updates
   const onDragEnd = async (result: DropResult) => {
     if (!isClient) return;
     
@@ -527,34 +522,67 @@ export default function Board() {
     const src = source.droppableId;
     const dst = destination.droppableId;
 
-    setLoading(true);
-    setDragInProgress(false);
-    setApiError(null);
+    // Update UI INSTANTLY (optimistic update)
+    const srcItems = Array.from(leads[src] ?? []);
+    const [movedLead] = srcItems.splice(source.index, 1);
     
-    try {
-      const srcItems = Array.from(leads[src] ?? []);
-      const [moved] = srcItems.splice(source.index, 1);
-      if (!moved) {
-        setLoading(false);
-        return;
-      }
+    if (!movedLead) {
+      setDragInProgress(false);
+      return;
+    }
 
-      // Send empty note to prevent duplication - the note is already stored separately
-      await leadApi.moveLead(moved.id, src, dst, "");
-      
-      // Add delay to ensure backend processes before refresh
-      setTimeout(fetchLeads, 500);
-      
-      if (dst === "FIRST_CUT_DESIGN_QUOTATION") {
-        setUnlocked(true);
-      }
-      setLastOperationTime(Date.now());
+    // Get stage duration for the NEW stage
+    const stageDuration = getStageDuration(dst, movedLead.projectType || selectedProjectType);
+    const now = new Date();
+    
+    // Calculate new deadline based on stage duration
+    let newDeadline = new Date(now);
+    if (stageDuration.unit === 'hours') {
+      const hours = parseFloat(stageDuration.duration);
+      newDeadline.setHours(now.getHours() + hours);
+    } else {
+      const days = parseFloat(stageDuration.duration);
+      newDeadline.setDate(now.getDate() + days);
+    }
+
+    // Calculate hours/days remaining
+    const timeDiff = newDeadline.getTime() - now.getTime();
+    const hoursRemaining = Math.max(0, Math.floor(timeDiff / (1000 * 60 * 60)));
+    const daysRemaining = Math.max(0, Math.ceil(timeDiff / (1000 * 60 * 60 * 24)));
+    
+    // Create updated lead with new timeline properties
+    const updatedLead = {
+      ...movedLead,
+      status: dst, // Update status immediately
+      stageType: dst, // Update stage type immediately
+      currentStageStartedAt: now.toISOString(), // Reset stage start time
+      currentStageDeadlineAt: newDeadline.toISOString(), // Set new deadline
+      hoursRemaining: stageDuration.unit === 'hours' ? hoursRemaining : undefined,
+      daysRemaining: stageDuration.unit === 'days' ? daysRemaining : undefined,
+      overdue: false, // Reset overdue status
+      // Update cumulative days (simplified - increment by 1 for demo)
+      cumulativeDaysElapsed: (movedLead.cumulativeDaysElapsed || 0) + 1,
+      cumulativeDaysScheduled: (movedLead.cumulativeDaysScheduled || 0) + 
+        (stageDuration.unit === 'days' ? parseFloat(stageDuration.duration) : 
+         parseFloat(stageDuration.duration) / 24)
+    };
+
+    // INSTANT UI UPDATE - No waiting
+    setLeads(prev => ({
+      ...prev,
+      [src]: srcItems,
+      [dst]: [...(prev[dst] ?? []), updatedLead]
+    }));
+
+    setDragInProgress(false);
+    
+    // Call API in background (no loading state, no waiting)
+    try {
+      await leadApi.moveLead(movedLead.id, src, dst, "");
     } catch (error: any) {
       console.error(`Failed to move lead: ${error.message}`);
-      setApiError(`Failed to move lead: ${error.message}`);
-      setTimeout(fetchLeads, 500);
-    } finally {
-      setLoading(false);
+      // If API fails, refresh to get correct state
+      fetchLeads();
     }
   };
 
@@ -569,7 +597,7 @@ export default function Board() {
   const canPrev = currentFirstIndexInAll > 0;
   const canNext = startIndex + (windowSize - 1) < scrollableStages.length;
 
-  const isInteractionDisabled = loading || dragInProgress || !isClient;
+  const isInteractionDisabled = dragInProgress || !isClient;
 
   // Don't render during SSR
   if (!isClient) {
@@ -772,10 +800,10 @@ export default function Board() {
                                 projectStatus={lead.projectStatus}
                                 rejectionImpact={lead.rejectionImpact}
                                 rejectedReason={lead.rejectedReason}
-                                // Pass all notes and rejection notes separately
-                              
-        
-                               
+                                allNotes={lead.allNotes}
+                                regularNotes={lead.regularNotes}
+                                rejectionNotes={lead.rejectionNotes}
+                                rawNotes={lead.rawNotes}
                               />
                             </div>
                           )}
@@ -851,8 +879,10 @@ export default function Board() {
                                       projectStatus={lead.projectStatus}
                                       rejectionImpact={lead.rejectionImpact}
                                       rejectedReason={lead.rejectedReason}
-                                      // Pass all notes and rejection notes separately
-                                     
+                                      allNotes={lead.allNotes}
+                                      regularNotes={lead.regularNotes}
+                                      rejectionNotes={lead.rejectionNotes}
+                                      rawNotes={lead.rawNotes}
                                     />
                                   </div>
                                 )}
